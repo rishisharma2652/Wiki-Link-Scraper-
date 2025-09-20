@@ -3,12 +3,22 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import re
 from typing import Set, List
+import time
 
 class WikipediaScraper:
     def __init__(self):
         self.base_url = "https://en.wikipedia.org"
         self.visited_links: Set[str] = set()
         self.all_links: Set[str] = set()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
     
     def is_valid_wikipedia_link(self, url: str) -> bool:
         """Check if the URL is a valid Wikipedia link"""
@@ -18,7 +28,7 @@ class WikipediaScraper:
             return False
         
         # Check if it's a proper article (not a special page)
-        if any(parsed.path.startswith(prefix) for prefix in ['/wiki/Special:', '/wiki/Help:', '/wiki/File:', '/wiki/Template:']):
+        if any(parsed.path.startswith(prefix) for prefix in ['/wiki/Special:', '/wiki/Help:', '/wiki/File:', '/wiki/Template:', '/wiki/Category:', '/wiki/Portal:']):
             return False
         
         return True
@@ -26,8 +36,15 @@ class WikipediaScraper:
     def get_wiki_links(self, url: str, max_links: int = 10) -> List[str]:
         """Scrape Wikipedia page for unique links"""
         try:
-            response = requests.get(url, timeout=10)
+            # Add delay to be respectful to the server
+            time.sleep(0.5)
+            
+            response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
+            
+            # Check if we got a valid HTML response
+            if 'text/html' not in response.headers.get('Content-Type', ''):
+                return []
             
             soup = BeautifulSoup(response.content, 'html.parser')
             content_div = soup.find('div', {'id': 'bodyContent'})
@@ -39,9 +56,19 @@ class WikipediaScraper:
             for link in content_div.find_all('a', href=True):
                 href = link['href']
                 
-                # Filter only wiki article links
-                if href.startswith('/wiki/') and ':' not in href.split('/wiki/')[1]:
+                # Filter only wiki article links (avoid fragments, external links, etc.)
+                if (href.startswith('/wiki/') and 
+                    not href.startswith('/wiki/File:') and
+                    not href.startswith('/wiki/Template:') and
+                    not href.startswith('/wiki/Special:') and
+                    not href.startswith('/wiki/Category:') and
+                    not href.startswith('/wiki/Help:') and
+                    not href.startswith('/wiki/Portal:') and
+                    ':' not in href.split('/wiki/')[1].split('#')[0] and
+                    '#' not in href.split('/wiki/')[1]):  # Avoid anchor links
+                    
                     full_url = urljoin(self.base_url, href)
+                    full_url = full_url.split('#')[0]  # Remove fragment identifiers
                     
                     # Add if it's a valid Wikipedia link and not visited
                     if (self.is_valid_wikipedia_link(full_url) and 
@@ -57,6 +84,9 @@ class WikipediaScraper:
             
         except requests.RequestException as e:
             print(f"Error fetching {url}: {e}")
+            return []
+        except Exception as e:
+            print(f"Unexpected error with {url}: {e}")
             return []
     
     def scrape_wikipedia(self, start_url: str, n: int):
@@ -80,6 +110,7 @@ class WikipediaScraper:
             print(f"Processing {len(current_level_links)} links...")
             
             next_level_links = set()
+            links_processed = 0
             
             for url in current_level_links:
                 if url not in self.visited_links:
@@ -92,11 +123,17 @@ class WikipediaScraper:
                         self.all_links.add(link)
                     
                     self.visited_links.add(url)
+                    links_processed += 1
             
             current_level_links = next_level_links
             
             print(f"Found {len(next_level_links)} new links in this cycle")
             print(f"Total unique links collected: {len(self.all_links)}")
+            
+            # If no new links found, break early
+            if not next_level_links:
+                print("No new links found. Stopping early.")
+                break
         
         return self.all_links
 
